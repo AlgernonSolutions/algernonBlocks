@@ -1,0 +1,415 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: the basic building block for an Algernon deploy
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: algernon-solutions-block
+    Description: the basic building block for an Algernon deploy
+    Author: algernon_solutions
+    SpdxLicenseId: AGPL-3.0-or-later
+    LicenseUrl: s3://algernonsolutions-templates-dev/4ae09d45eac4aa08d013b5f2e01c67f6
+    ReadmeUrl: s3://algernonsolutions-templates-dev/363108fe34c5ec57c418df07f63d1024
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Existing Resources
+      Parameters:
+      - ExistingWorkerRoleArn
+      - ExistingVpcId
+      - ExistingEventStorageBucketArn
+      - ExistingEventStorageBucketLoggingBucketArn
+      - ExistingVpcFlowLogsBucketArn
+      - ExistingVpcFlowLogsBucketLoggingBucketArn
+      - ExistingWorkerRoleArn
+    - Label:
+        default: VPC Addresses
+      Parameters:
+      - VpcCidr
+      - FirstSubnetCidr
+      - SecondSubnetCidr
+      - ThirdSubnetCidr
+      - FourthSubnetCidr
+    ParameterLabels:
+      VpcCidr:
+        default: What CIDR range should be assigned to the generated VPC?
+      FirstSubnetCidr:
+        default: What CIDR range should be assigned to the first generated subnet?
+      SecondSubnetCidr:
+        default: What CIDR range should be assigned to the second generated subnet?
+      ThirdSubnetCidr:
+        default: What CIDR range should be assigned to the third generated subnet?
+      FourthSubnetCidr:
+        default: What CIDR range should be assigned to the fourth generated subnet?
+Parameters:
+  ExistingWorkerRoleArn:
+    Type: String
+    Description: Leave blank to generate the role for the Lambda worker, or input
+      an existing role
+    Default: ''
+  ExistingSecurityGroupId:
+    Type: String
+    Description: to use an existing security group, specify it here, this parameter
+      ignored when creating a VPC
+    Default: ''
+  ExistingVpcId:
+    Type: String
+    Description: To use an existing VPC for this block, enter the ID of the VPC, to
+      create a VPC for the Block leave it blank, if no VPC is desired, enter NONE
+    Default: NONE
+  VpcCidr:
+    Type: String
+    Description: if using an existing VPC this parameter is ignored, otherwise select
+      a CIDR range for the generated VPC
+    Default: 192.168.0.0/22
+  FirstSubnetCidr:
+    Type: String
+    Description: if using an existing VPC this parameter is ignored, otherwise select
+      a CIDR range for the first generated Subnet
+    Default: 192.168.0.0/24
+  SecondSubnetCidr:
+    Type: String
+    Description: if using an existing VPC this parameter is ignored, otherwise select
+      a CIDR range for the second generated Subnet
+    Default: 192.168.1.0/24
+  ThirdSubnetCidr:
+    Type: String
+    Description: if using an existing VPC this parameter is ignored, otherwise select
+      a CIDR range for the third generated Subnet
+    Default: 192.168.2.0/24
+  FourthSubnetCidr:
+    Type: String
+    Description: if using an existing VPC this parameter is ignored, otherwise select
+      a CIDR range for the fourth generated Subnet
+    Default: 192.168.3.0/24
+  ExistingEventStorageBucketArn:
+    Type: String
+    Description: the leech automatically stores events into an S3 bucket for analytics,
+      to use an existing bucket, enter the ARN here, otherwise one will be created
+    Default: ''
+  ExistingEventStorageBucketLoggingBucketArn:
+    Type: String
+    Description: access to the event storage is logged, to specify logging to particular
+      bucket, enter the ARN here, otherwise algernon will create one for you
+    Default: ''
+  EventStoragePrefix:
+    Type: String
+    Description: events stored in the S3 bucket do not normally have a prefix attached,
+      to prefix events from this block, enter it here
+    Default: ''
+  ExistingVpcFlowLogsBucketArn:
+    Type: String
+    Description: if a VPC is being created, specify this value to route FlowLogs to
+      an existing bucket, leave blank to create a bucket
+    Default: ''
+  FlowLogsFolderName:
+    Type: String
+    Description: if creating a VPC, specify the folder within the FlowLogs bucket
+      to receive the logs
+    Default: flow_logs
+  ExistingVpcFlowLogsBucketLoggingBucketArn:
+    Type: String
+    Description: if a VPC is being created, specify this value to route access logs
+      for the FlowLog bucket to an existing bucket, leave blank to create a bucket
+    Default: ''
+Conditions:
+  CreateWorkerRole:
+    Fn::Equals:
+    - Ref: ExistingWorkerRoleArn
+    - ''
+  CreateVpc:
+    Fn::Equals:
+    - Ref: ExistingVpcId
+    - ''
+  CreateVpcWorker:
+    Fn::Not:
+    - Fn::Equals:
+      - Ref: ExistingVpcId
+      - NONE
+  CreateEventStorageBucket:
+    Fn::Equals:
+    - Ref: ExistingEventStorageBucketArn
+    - ''
+  CreateEventStorageLoggingBucket:
+    Fn::Equals:
+    - Ref: ExistingEventStorageBucketLoggingBucketArn
+    - ''
+Globals:
+  Function:
+    Runtime: python3.6
+    Timeout: 300
+    CodeUri: ./
+    Tracing: Active
+    Layers:
+    - Ref: LayerArn
+    Environment:
+      Variables:
+        LISTENER_ARN:
+          Ref: Listener
+        VPC_LEECH_LISTENER_ARN:
+          Ref: VpcListener
+Resources:
+  Listener:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: leech-listener
+      KmsMasterKeyId: alias/aws/sns
+      Subscription:
+      - Endpoint:
+          Fn::GetAtt:
+          - EventQueue
+          - Arn
+        Protocol: sqs
+  EventQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 300
+      RedrivePolicy:
+        deadLetterTargetArn:
+          Fn::GetAtt:
+          - DeadLetter
+          - Arn
+        maxReceiveCount: 50
+      KmsMasterKeyId:
+        Ref: MasterKey
+  QueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+      - Ref: EventQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: SqsPolicy
+        Statement:
+        - Effect: Allow
+          Principal: '*'
+          Action: SQS:SendMessage
+          Resource:
+            Fn::GetAtt:
+            - EventQueue
+            - Arn
+          Condition:
+            ArnEquals:
+              aws:SourceArn:
+                Ref: Listener
+  VpcListener:
+    Type: AWS::SNS::Topic
+    Condition: CreateVpcWorker
+    Properties:
+      DisplayName: vpc-leech-listener
+      KmsMasterKeyId: alias/aws/sns
+      Subscription:
+      - Endpoint:
+          Fn::GetAtt:
+          - VpcEventQueue
+          - Arn
+        Protocol: sqs
+  VpcEventQueue:
+    Type: AWS::SQS::Queue
+    Condition: CreateVpcWorker
+    Properties:
+      VisibilityTimeout: 300
+      RedrivePolicy:
+        deadLetterTargetArn:
+          Fn::GetAtt:
+          - DeadLetter
+          - Arn
+        maxReceiveCount: 50
+      KmsMasterKeyId:
+        Ref: MasterKey
+  VpcQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Condition: CreateVpcWorker
+    Properties:
+      Queues:
+      - Ref: VpcEventQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: VpcSqsPolicy
+        Statement:
+        - Effect: Allow
+          Principal: '*'
+          Action: SQS:SendMessage
+          Resource:
+            Fn::GetAtt:
+            - VpcEventQueue
+            - Arn
+          Condition:
+            ArnEquals:
+              aws:SourceArn:
+                Ref: VpcListener
+  BlockVpc:
+    Type: AWS::CloudFormation::Stack
+    Condition: CreateVpc
+    Properties:
+      Parameters:
+        VpcCidr:
+          Ref: VpcCidr
+        FirstSubnetCidr:
+          Ref: FirstSubnetCidr
+        SecondSubnetCidr:
+          Ref: SecondSubnetCidr
+        ThirdSubnetCidr:
+          Ref: ThirdSubnetCidr
+        FourthSubnetCidr:
+          Ref: FourthSubnetCidr
+        FlowLogsBucketArn:
+          Ref: ExistingVpcFlowLogsBucketArn
+        FlowLogsFolderName:
+          Ref: FlowLogsFolderName
+        FlowLogsBucketLoggingBucketArn:
+          Ref: ExistingVpcFlowLogsBucketLoggingBucketArn
+      TemplateURL: https://s3.amazonaws.com/algernonsolutions-templates-dev/27155f04ec5fdc33e35439c3247696fc.template
+  EventStoragePipe:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        TopicArn:
+          Ref: Listener
+        VpcTopicArn:
+          Fn::If:
+          - CreateVpcWorker
+          - Ref: VpcListener
+          - ''
+        StreamPrefix:
+          Ref: EventStoragePrefix
+        BucketArn:
+          Fn::If:
+          - CreateEventStorageBucket
+          - Fn::GetAtt:
+            - EventStorageBucket
+            - Arn
+          - Ref: ExistingEventStorageBucketArn
+      TemplateURL: https://s3.amazonaws.com/algernonsolutions-templates-dev/47b4ef35ebdb7ea26a93cfe9c3cb1805.template
+  MasterKey:
+    Type: AWS::KMS::Key
+    Properties:
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - sns.amazonaws.com
+            - lambda.amazonaws.com
+          Action:
+          - kms:GenerateDataKey*
+          - kms:Decrypt
+          Resource: '*'
+        - Effect: Allow
+          Principal:
+            AWS:
+              Fn::Join:
+              - ''
+              - - 'arn:aws:iam::'
+                - Ref: AWS::AccountId
+                - :root
+          Action:
+          - kms:*
+          Resource: '*'
+  DeadLetter:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: alias/aws/sqs
+      MessageRetentionPeriod: 1209600
+  EventStorageLoggingBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateEventStorageLoggingBucket
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketName:
+        Fn::Sub: ${AWS::StackName}-event-storage-access
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+  EventStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: ${AWS::StackName}-event-storage
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: aws:kms
+      LoggingConfiguration:
+        DestinationBucketName:
+          Fn::If:
+          - CreateEventStorageLoggingBucket
+          - Ref: EventStorageLoggingBucket
+          - Ref: ExistingEventStorageBucketLoggingBucketArn
+        LogFilePrefix:
+          Fn::Join:
+          - '-'
+          - - Ref: AWS::StackId
+            - EventStoragePrefix
+  WorkerRole:
+    Type: AWS::CloudFormation::Stack
+    Condition: CreateWorkerRole
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/algernonsolutions-templates-dev/3a5966ea579234c09f3aa9c689b52e9a.template
+Outputs:
+  WorkerRoleArn:
+    Description: The ARN of the role used by workers in the block
+    Value:
+      Fn::If:
+      - CreateWorkerRole
+      - Fn::GetAtt:
+        - WorkerRole
+        - Outputs.WorkerRoleArn
+      - Ref: ExistingWorkerRoleArn
+  ListenerArn:
+    Description: The ARN of the generated listener for this block
+    Value:
+      Ref: Listener
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-leech-listener
+  VpcId:
+    Condition: CreateVpc
+    Description: The ID of the VPC for the block
+    Value:
+      Fn::If:
+      - CreateVpc
+      - Fn::GetAtt:
+        - BlockVpc
+        - Outputs.VpcId
+      - Ref: ExistingVpcId
+  SecurityGroupName:
+    Condition: CreateVpc
+    Description: The name of the generated security group
+    Value:
+      Fn::GetAtt:
+      - BlockVpc
+      - Outputs.SecurityGroupName
+  BlockFlowLogsBucket:
+    Condition: CreateVpc
+    Description: The name of the generated security group
+    Value:
+      Fn::GetAtt:
+      - BlockVpc
+      - Outputs.FlowLogsBucketArn
+  BlockFlowLogsAccessBucket:
+    Condition: CreateVpc
+    Description: The name of the generated security group
+    Value:
+      Fn::GetAtt:
+      - BlockVpc
+      - Outputs.FlowLogsBucketLoggingArn
+  EventStorageBucketArn:
+    Description: The ARN of the bucket where all events will be stored
+    Value:
+      Fn::If:
+      - CreateEventStorageBucket
+      - Fn::GetAtt:
+        - EventStorageBucket
+        - Arn
+      - Ref: ExistingEventStorageBucketArn
+  EventStorageAccessBucketArn:
+    Description: The ARN where access to the EventStorage Bucket is recorded
+    Value:
+      Fn::If:
+      - CreateEventStorageLoggingBucket
+      - Fn::GetAtt:
+        - EventStorageLoggingBucket
+        - Arn
+      - Ref: ExistingEventStorageBucketLoggingBucketArn
